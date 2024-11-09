@@ -1,28 +1,61 @@
 import axios from 'axios';
 
-import { verifySignature, verifyNonce, mineBlock, verifyBlock, executeBlock } from '../utils/cryptoUtils.js';
-import { broadcastBlock, mergePeerNodes, savePeerNodes, loadPeerNodes } from '../utils/networkUtils.js';
-import { addToMempool, isMempoolFull, clearMempool, executeMempool } from '../utils/mempoolUtils.js';
-import { saveBlockchain, loadBlockchain, verifyBlockchain, addBlockToBlockchain, getLocalBlockchainLength } from '../utils/blockchainUtils.js';
+import { verifyNonce, mineBlock, verifyBlock } from '../utils/cryptoUtils.js';
+import { broadcastBlock, mergePeerNodes, savePeerNodes, loadPeerNodes, getIPv4FromIPv6 } from '../utils/networkUtils.js';
+import { addToMempool, isMempoolFull, clearMempool, showMempool } from '../utils/mempoolUtils.js';
+import { loadBlockchain, addBlockToBlockchain, getLocalBlockchainLength } from '../utils/blockchainUtils.js';
+import pkg from '../utils/ellipticUtils.cjs';
+const { verifySignature } = pkg
+
 
 // Function to sync peer nodes
 export const syncPeers = (req, res) => {
-    const incomingPeerNodes = req.body.peerNodes;
+    try {
+        const incomingPeerNodes = req.body.peerNodes;
 
-    // Load the local peer nodes using utils
-    const localPeerNodes = loadPeerNodes();
+        // Validate incoming peer nodes
+        if (!incomingPeerNodes || !Array.isArray(incomingPeerNodes)) {
+            return res.status(400).json({ error: 'Invalid input: peerNodes should be an array' });
+        }
 
-    // Merge the new peers with the local peers (avoiding duplicates)
-    const mergedPeerNodes = mergePeerNodes(localPeerNodes, incomingPeerNodes);
+        // Load the local peer nodes using utils
+        let localPeerNodes;
+        try {
+            localPeerNodes = loadPeerNodes();
+        } catch (error) {
+            console.error('Error loading local peer nodes:', error);
+            return res.status(500).json({ error: 'Failed to load local peer nodes' });
+        }
 
-    // Save the merged peer nodes list using utils
-    savePeerNodes(mergedPeerNodes);
+        // Merge the new peers with the local peers (avoiding duplicates)
+        let mergedPeerNodes;
+        try {
+            mergedPeerNodes = mergePeerNodes(localPeerNodes, incomingPeerNodes);
+        } catch (error) {
+            console.error('Error merging peer nodes:', error);
+            return res.status(500).json({ error: 'Failed to merge peer nodes' });
+        }
 
-    return res.status(200).json({ message: 'Peers synced successfully' });
+        // Save the merged peer nodes list using utils
+        try {
+            savePeerNodes(mergedPeerNodes);
+        } catch (error) {
+            console.error('Error saving peer nodes:', error);
+            return res.status(500).json({ error: 'Failed to save peer nodes' });
+        }
+
+        return res.status(200).json({ message: 'Peers synced successfully' });
+
+    } catch (error) {
+        console.error('Unexpected error in syncPeers:', error);
+        return res.status(500).json({ error: 'Internal server error' });
+    }
 };
+
 
 // Ping route to verify node availability
 export const pingNode = (req, res) => {
+    console.log("Node is Alive!")
     return res.status(200).json({ message: 'Node is alive' });
 };
 
@@ -35,34 +68,36 @@ export const recieveTxn = async (req, res) => {
         // 1. Verify the signature
         const isValidSignature = verifySignature(transaction.sender, transaction.recipient, transaction.amt, transaction.nonce, transaction.sign);
         if (!isValidSignature) {
+            console.error("Invalid Sign")
             return res.status(400).json({ error: 'Invalid signature' });
         }
 
         // 2. Verify the nonce of txn
-        const isNonceValid = verifyNonce(transaction.sender, transaction.nonce);
+        const isNonceValid = await verifyNonce(transaction.sender, transaction.nonce);
+        console.log(isNonceValid)
         if (!isNonceValid) {
+            console.error("Invalid Nonce")
             return res.status(400).json({ error: 'Invalid nonce' });
         }
 
         // 4. Add transaction to the mempool
-        const addedToMempool = addToMempool(transaction);
-        if (!addedToMempool) {
-            return res.status(500).json({ error: 'Failed to add transaction to mempool' });
-        }
+        addToMempool(transaction);
+        // if (!addedToMempool) {
+        //     return res.status(500).json({ error: 'Failed to add transaction to mempool' });
+        // }
+
+        showMempool()
 
         if (isMempoolFull()) {
 
-            // execute mempool
-            executeMempool();
-
             // mine
-            const minedBlock = mineBlock();
+            const minedBlock = await mineBlock();
 
             // add to local blockchain
-            addBlockToBlockchain();
+            await addBlockToBlockchain();
 
             // broadcast block
-            broadcastBlock(minedBlock);
+            await broadcastBlock(minedBlock);
 
             // clear mempool
             clearMempool();
@@ -84,27 +119,28 @@ export const recieveBlock = async (req, res) => {
     };
 
     // add to local blockchain
-    addBlockToBlockchain(incomingBlock)
+    await addBlockToBlockchain(incomingBlock)
 
-    // execute
-    executeBlock(incomingBlock)
 }
 
 export const syncBlockchain = async (req, res) => {
-    const incomingBlockchain = req.body.blockchain
-    verifyBlockchain(incomingBlockchain);
+    // 1. get blocks[] from blockchain
 
-    // if verified
-    saveBlockchain(incomingBlockchain);
+    // 2. build blockchain step by step
+    // for(int i=0; i<blockchain.length; i++){
+    //     verifyBlock(blockchain[i]);
+    //     addBlockToBlockchain(blockchain[i]);
+    // }
 }
 
 export const requestSyncPeers = async (req, res) => {
     const { port } = req.body;
-    const ip = req.ip;
+    const ip = getIPv4FromIPv6(req.ip);
 
     try {
+        console.debug("requester = ", ip, " at = ", port);
         // Make a request to the peer to get their list of peer nodes
-        const peerResponse = await axios.post(`http://${ip}:${port}/sync/peers`, {
+        const peerResponse = await axios.post(`http://${ip}:${port}/node/sync/peers`, {
             peerNodes: loadPeerNodes()
         });
 
@@ -126,15 +162,17 @@ export const requestSyncBlockchain = async (req, res) => {
     const ip = req.ip;
 
     try {
-        const peerBlockchainLength = getLocalBlockchainLength();
+        const peerBlockchainLength = await getLocalBlockchainLength();
 
         if (peerBlockchainLength <= req.length) {// req.length stores length of blockchain of requester
             return res.status().json({ error: 'Requester already has a longer blockchain' })
         }
 
+        const blockchain = await loadBlockchain()
+
         // Request peer to send their blockchain for syncing
         const peerResponse = await axios.post(`http://${ip}:${port}/sync/blockchain`, {
-            blockchain: loadBlockchain()
+            blockchain
         });
 
         // Respond based on peer's response

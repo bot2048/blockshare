@@ -4,12 +4,13 @@ import crypto from 'crypto';
 import { loadMempool } from './mempoolUtils.js';
 import { getBlockNumber, getPrevBlockHash } from './blockchainUtils.js';
 import net from "net";
+import { exec } from 'child_process';
 
 function sendCommand(command) {
     return new Promise((resolve, reject) => {
         const client = new net.Socket();
 
-        client.connect(8080, '172.31.107.55', () => {
+        client.connect(8080, process.env.IP, () => {
             console.log(`Connected`)
             client.write(command);
         });
@@ -27,45 +28,40 @@ function sendCommand(command) {
 
 
 // Save the blockchain state
-export function saveBlockchainState(state) {
-}
-
-export function createBlockchainState() {
-    // execute each txn in the Blockchain
-}
-
-// Verify the signature of the transaction
-export function verifySignature(sender, recipient, amt, nonce, sign) {
-    const data = `${sender}${recipient}${amt}${nonce}`;
-    const verifier = crypto.createVerify('SHA256');
-    verifier.update(JSON.stringify(data));
-    verifier.end();
-
-    try {
-        return verifier.verify(sender, sign, 'base64');
-    } catch (error) {
-        console.log('Signature verification failed: ', error.message);
-        return false
-    }
+export async function saveBlockchainState(state) {
 
 }
+
+
 
 // Verify nonce (ensure the transaction is in correct order)
 // CPP Function for Server
-export function verifyNonce(sender, nonce) {
+export async function verifyNonce(sender, nonce) {
+    const res = await getStateOfAddress(sender)
+    if (parseInt(res.nonce) === parseInt(nonce) - 1) {
+        return true;
+    }
 
+    return false;
 }
 
-export function getBalanceByAddress(address) {
+export async function getBalanceByAddress(address) {
     const balance = 0; // CPP function
     return balance;
 }
 
+// !------- COMMANDS FOR INTERACTING WITH BLOCKCHAINSTATE.EXE -------!
+
 // Load the current blockchain state
 export async function loadBlockchainState() {
     const response = await sendCommand(`GET_ALL`)
-    // key:amt:nonce,key:amt:nonce
-
+    const state = response.split(',').map(entry => ({
+        [entry.split(':')[0]]: {
+            balance: entry.split(':')[1],
+            nonce: entry.split(':')[2]
+        }
+    }));
+    return state;
 }
 
 export async function getStateOfAddress(address) {
@@ -77,54 +73,51 @@ export async function getStateOfAddress(address) {
     return { balance, nonce };
 }
 
-// CPP Function for Server
-export async function executeTxn(txn) {
-    const response = await sendCommand(`EXECUTE ${txn.sender} ${rxn.recipient} ${txn.nonce} ${txn.amt}`)
-    if (parseInt(response) < 0) {
-        console.log("Failure in execution");
-    }
-    else if (parseInt(response) >= 0) {
-        console.log("Transaction Executed Succesfully");
-    }
-}
+// // CPP Function for Server
 
-export async function getStateHash() {
-    const response = await sendCommand(`GET_STATE_HASH`);
-    return parseInt(response);
-}
+
 
 // Block utils
 
-// CPP Executable
 export function verifyBlock(block) {
 
-    // check prevHash = prev.hash
-    // check hash
+    const data = `${block.prevBlockHash}${block.transactions}${block.blockNumber}${block.nonce}`
+    const hash = crypto.createHash('sha256').update(JSON.stringify(data)).digest('hex');
 
-    return // bool
+    return hash === block.blockHash;
 }
 
-export const mineBlock = () => {
+export const mineBlock = async () => {
 
     const mempool = loadMempool();
-    const stateHash = getStateHash();
-    const prevBlockHash = getPrevBlockHash();
-    const blockNumber = getBlockNumber() + 1;
-    const data = `${prevBlockHash}${mempool}${stateHash}${blockNumber}`
-    const { nonce, blockHash } = getNonceAndHash(JSON.stringify(data));
-    const newBlock = { prevBlockHash, mempool, stateHash, blockNumber, nonce, blockHash };
+    const prevBlockHash = await getPrevBlockHash();
+    const blockNumber = await getBlockNumber() + 1;
+    const data = `${prevBlockHash}${mempool}${blockNumber}`
+    const { nonce, blockHash } = await getNonceAndHash(JSON.stringify(data));
+    const newBlock = { prevBlockHash, mempool, blockNumber, nonce, blockHash };
     return newBlock;
 }
 
+function runSha256(baseString, k) {
+    // Run the C++ executable with the base string and number of leading zeros
+    exec(`C:/Projectrs/DSA_PROJECT/blockshare/native/hashNonce.exe "${baseString}" ${k}`, (error, stdout, stderr) => {
+        if (error) {
+            console.error(`Error: ${error.message}`);
+            return;
+        }
+        if (stderr) {
+            console.error(`stderr: ${stderr}`);
+            return;
+        }
+        // Parse and log the JSON output from the C++ program
+        const output = JSON.parse(stdout.trim());
+        console.log("Resulting string + nonce:", output.result);
+        console.log("Hash:", output.hash);
+    });
+}
+getNonceAndHash("arpan")
 // CPP function [MINING]
 async function getNonceAndHash(message) {
+    runSha256(message,5);
     // message + 0 = 0000hash 
-}
-
-
-
-export function executeBlock(block) {
-    block.transactions.forEach(txn => {
-        executeTxn(txn);
-    });
 }

@@ -17,10 +17,10 @@ router.post('/sync/blockchain', verifyNodeRequest, syncBlockchain);
 router.post('/sync/peers', verifyNodeRequest, syncPeers);
 
 // Ping route to check if node is alive
-router.get('/ping', verifyNodeRequest, pingNode);
+router.get('/ping', pingNode);
 
-router.get('/request-sync/peers', verifyNodeRequest, requestSyncPeers);
+router.post('/request-sync/peers', verifyNodeRequest, requestSyncPeers);
 
-router.get('/request-sync/blockchain', verifyNodeRequest, calculateBlockchainLength, requestSyncBlockchain);
+router.post('/request-sync/blockchain', verifyNodeRequest, calculateBlockchainLength, requestSyncBlockchain);
 
 export default router;

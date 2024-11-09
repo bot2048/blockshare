@@ -1,34 +1,52 @@
 import crypto from 'crypto';
-import { loadPeerNodes } from '../utils/networkUtils.js';
+import { getIPv4FromIPv6, loadPeerNodes } from '../utils/networkUtils.js';
 
 // Middleware to verify that the request comes from a legitimate node
 export const verifyNodeRequest = (req, res, next) => {
-    const { ip, port, public_key, sign } = req.body;
+    try {
+        const ip = req.ip;
 
-    // Check if all necessary fields are provided
-    if (!ip || !port || !public_key || !sign) {
-        return res.status(400).json({ message: 'Missing required node details' });
+        // Extract IPv4 address from potential IPv6 format
+        const ipv4 = getIPv4FromIPv6(ip);
+
+        // Check if IP is valid
+        if (!ipv4) {
+            console.error('Error: Missing required node details - invalid IP address');
+            return res.status(400).json({ message: 'Missing required node details' });
+        }
+
+        console.log(`Incoming request from IP: ${ipv4}`);
+
+        // Load peer nodes
+        let peerNodes;
+        try {
+            peerNodes = loadPeerNodes();
+            if (!peerNodes || peerNodes.length === 0) {
+                console.error('Error: Could not load peer nodes');
+                return res.status(500).json({ message: 'Could not load peer nodes' });
+            }
+        } catch (error) {
+            console.error('Error loading peer nodes:', error);
+            return res.status(500).json({ message: 'Failed to load peer nodes' });
+        }
+
+        console.log('Loaded peer nodes:', peerNodes);
+
+        // Check if the node is registered
+        const registeredNode = peerNodes.find(node => node.ip === ipv4);
+        if (!registeredNode) {
+            console.error(`Error: Node is not registered or public key mismatch for IP: ${ipv4}`);
+            return res.status(403).json({ message: 'Node is not registered or public key mismatch' });
+        }
+
+        // If verification is successful, proceed to the next middleware or route handler
+        next();
+    } catch (error) {
+        console.error('Unexpected error in verifyNodeRequest:', error);
+        return res.status(500).json({ message: 'Internal server error' });
     }
-
-    // Load peer nodes to get the public key of the node making the request
-    const peerNodes = loadPeerNodes();
-    const registeredNode = peerNodes.find(node => node.ip === ip && node.port === port);
-
-    // Check if the node is registered
-    if (!registeredNode || registeredNode.public_key !== public_key) {
-        return res.status(403).json({ message: 'Node is not registered or public key mismatch' });
-    }
-
-    // Verify the signature using the public key
-    const isValidSignature = verifySignature({ ip, port }, sign, public_key);
-
-    if (!isValidSignature) {
-        return res.status(403).json({ message: 'Invalid signature. Request not authenticated.' });
-    }
-
-    // If verification is successful, proceed to the next middleware or route handler
-    next();
 };
+
 
 // Helper function to verify the signature
 export const verifyNodeSignature = (message, signature, publicKey) => {

@@ -1,11 +1,12 @@
 // Logic for handling blockchain-related requests
-import { verifySignature, verifyNonce, loadBlockchainState, mineBlock, getBalanceByAddress } from '../utils/cryptoUtils.js';
-import { pingNode } from './nodeController.js';
-import { loadPeerNodes, savePeerNodes, broadcastTransaction, broadcastBlock, syncPeerDataWithOtherNodes } from '../utils/networkUtils.js';
-import { verifyNodeSignature } from '../middlewares/nodeAuth.js';
-import { addToMempool, isMempoolFull, clearMempool, executeMempool } from '../utils/mempoolUtils.js';
+import { verifyNonce, loadBlockchainState, mineBlock, getBalanceByAddress } from '../utils/cryptoUtils.js';
+import { loadPeerNodes, savePeerNodes, broadcastTransaction, broadcastBlock, syncPeerDataWithOtherNodes, pingNodeUtil, getIPv4FromIPv6 } from '../utils/networkUtils.js';
+import { addToMempool, isMempoolFull, clearMempool, showMempool } from '../utils/mempoolUtils.js';
 import { addBlockToBlockchain } from '../utils/blockchainUtils.js';
+import pkg from '../utils/ellipticUtils.cjs';
+const { verifySignature } = pkg
 
+// 172.31.113.190
 /*
     {
         "port",
@@ -19,31 +20,36 @@ import { addBlockToBlockchain } from '../utils/blockchainUtils.js';
 // Function to handle new node registration
 export const registerNode = async (req, res) => {
 
-    const { provided_port, public_key, sign } = req.body;
-    const ip = req.ip;
-    // verify sign
-    const isValidSignature = verifyNodeSignature({ ip, provided_port }, sign, public_key);
-    if (!isValidSignature) {
-        return res.status(403).json({ message: 'Invalid signature' });
+    const { provided_port } = req.body;
+
+    if (!provided_port) {
+        return res.status(400).json({ message: 'No Port Provided' })
     }
 
-    // Ping the new node to verify that it’s live (? how it will work)
-    const isNodeActive = await pingNode(ip, provided_port);
+    const ip = getIPv4FromIPv6(req.ip);
+
+    // Ping the new node to verify that it’s live 
+    const isNodeActive = pingNodeUtil(ip, provided_port);
 
     if (!isNodeActive) {
-        return res.status(400).json({ message: 'Node verification failed' });
+        return res.status(400).json({ message: 'Node verification failed at status' });
     }
 
     // Load peer nodes using utils
     const peerNodes = loadPeerNodes();
 
+
     // Check if the node already exists
-    const nodeExists = peerNodes.some(node => node.public_key === public_key || (node => node.ip === ip && node.port === provided_port)); // [check]
+    const nodeExists = peerNodes.some(node => node.ip === ip); // [check]
     if (nodeExists) {
         return res.status(400).json({ message: 'Node already exists' });
     }
 
-    const newNode = { ip, provided_port, public_key };
+    const newNode =
+    {
+        ip: ip,
+        port: provided_port
+    }
 
     // Add the new node to peer nodes
     peerNodes.push(newNode);
@@ -68,35 +74,34 @@ export const submitTxn = async (req, res) => {
     if (!isSignatureValid) {
         return res.status(400).json({ error: 'Invalid signature' });
     }
+    console.debug("sign verified")
 
     // 2. Verify the nonce (to prevent replay attacks) 
     const isNonceValid = verifyNonce(sender, nonce);
     if (!isNonceValid) {
         return res.status(400).json({ error: 'Invalid nonce' });
     }
+    console.debug("nonce validated")
 
     // 3. Broadcast the transaction to peers
     const transaction = { sender, recipient, amt, nonce, sign };
-    broadcastTransaction(transaction);
+    await broadcastTransaction(transaction);
 
     // 4. Add transaction to the mempool, mine if full
-    const addedToMempool = addToMempool(transaction);
-    if (!addedToMempool) {
-        return res.status(500).json({ error: 'Failed to add transaction to mempool' });
-    }
+    addToMempool(transaction);
+    console.debug("added to mempool")
+    showMempool()
 
     if (isMempoolFull()) {
-        // execute mempool
-        executeMempool();
 
         // mine
-        const minedBlock = mineBlock();
+        const minedBlock = await mineBlock();
 
         // add to local blockchain
-        addBlockToBlockchain(minedBlock)
+        await addBlockToBlockchain(minedBlock)
 
         // broadcast block
-        broadcastBlock(minedBlock);
+        await broadcastBlock(minedBlock);
 
         // clear mempool
         clearMempool();
@@ -109,20 +114,21 @@ export const submitTxn = async (req, res) => {
 };
 
 // Controller to check balance by address
-export const checkBalanceByAdd = (req, res) => {
+export const checkBalanceByAdd = async (req, res) => {
     const { address } = req.params;
+    const balance = await getBalanceByAddress(address)
 
     // Return the balance of the address
     res.status(200).json({
         address,
-        balance: getBalanceByAddress(address)
+        balance
     });
 };
 
 // Controller to get the entire blockchain state
-export const getState = (req, res) => {
+export const getState = async (req, res) => {
     // Load the entire blockchain state
-    const state = loadBlockchainState();
+    const state = await loadBlockchainState();
 
     // Return the state
     res.status(200).json({

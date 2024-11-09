@@ -9,7 +9,7 @@ import { dirname } from 'path';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-const PEER_FILE = path.join(__dirname, '../localdb/peernodes.json');
+const PEER_FILE = path.join(__dirname, '../localdb/peers.json');
 
 // Helper function to ensure file exists
 function ensureFileExists(filePath) {
@@ -22,6 +22,7 @@ function ensureFileExists(filePath) {
 export function loadPeerNodes() {
     ensureFileExists(PEER_FILE); // Ensure the file exists before loading
     try {
+        console.log("loading...");
         return JSON.parse(fs.readFileSync(PEER_FILE, 'utf8'));
     } catch (error) {
         console.error('Error loading peer nodes:', error.message);
@@ -41,24 +42,63 @@ export function savePeerNodes(peers) {
 
 // Merge peer node lists (avoid duplicates)
 export function mergePeerNodes(localPeers, newPeers) {
-    const mergedPeers = [...localPeers];
-    newPeers.forEach(newPeer => {
-        const exists = localPeers.some(localPeer => localPeer.ip === newPeer.ip && localPeer.port === newPeer.port);
-        if (!exists) {
-            mergedPeers.push(newPeer);
-        }
-    });
-    return mergedPeers;
+    try {
+        // Debug: Log the input peer lists
+        console.debug('Merging peer nodes...');
+        console.debug('Local peers:', localPeers);
+        console.debug('New peers:', newPeers);
+
+        const mergedPeers = [...localPeers];
+
+        // Iterate through the new peers and add those that are not already in the local list
+        newPeers.forEach(newPeer => {
+            const exists = localPeers.some(localPeer => localPeer.ip === newPeer.ip);
+
+            if (!exists) {
+                console.debug(`Adding new peer: ${newPeer.ip}`);
+                mergedPeers.push(newPeer);
+            } else {
+                console.debug(`Peer already exists: ${newPeer.ip}`);
+            }
+        });
+
+        // Debug: Log the final merged list
+        console.debug('Merged peers:', mergedPeers);
+
+        return mergedPeers;
+
+    } catch (error) {
+        // Error: Log any unexpected errors
+        console.error('Error merging peer nodes:', error);
+        throw new Error('Failed to merge peer nodes');
+    }
 }
 
 
-// Ping the node to check if it's alive and functional
+
+export const getIPv4FromIPv6 = (ip) => {
+    // Check if the IP is IPv6-mapped IPv4 (like "::ffff:192.168.1.1")
+    const ipv4MappedRegex = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/;
+
+    const match = ip.match(ipv4MappedRegex);
+    if (match) {
+        // Return the IPv4 part if it matches
+        // console.log(match[1])
+        return match[1];
+    }
+    return ip; // Return the original IP if it's not IPv4-mapped
+};
+
+
+// Ping the node to check if it's alive and functional // error. /node instead of /blockchain 
 export const pingNodeUtil = async (ip, port) => {
     try {
-        const response = await axios.get(`http://${ip}:${port}/blockchain/ping`);
+        const ipv4 = getIPv4FromIPv6(ip);
+        const response = await axios.get(`http://${ipv4}:${port}/node/ping`);
         return response.status === 200;
     } catch (error) {
-        console.error(`Failed to ping node ${ip}:${port}: ${error.message}`);
+        const ipv4 = getIPv4FromIPv6(ip);
+        console.error(`Failed to ping node ${ipv4}:${port}: ${error.message}`);
         return false;
     }
 };
@@ -71,7 +111,7 @@ export const broadcastTransaction = async (transaction) => {
     // Iterate through each peer and send the broadcast request
     for (const peer of peers) {
         const { ip, port } = peer;
-        const url = `http://${ip}:${port}/recieve/txn`;
+        const url = `http://${ip}:${port}/node/recieve/txn`;
 
         // Create a promise for the request
         const promise = axios.post(url, transaction)
